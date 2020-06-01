@@ -211,3 +211,7 @@ The full set of algorithms and inputs is laid out here:
 
 The key salt and IV are publicly available in the token, and the padded length
 is implied by the structure of the token.
+
+To reduce the possibility of side channel leaks, the library will only report
+success or failure of the cryptographic decoding, and will not differentiate 
+between padding errors and authentication errors.

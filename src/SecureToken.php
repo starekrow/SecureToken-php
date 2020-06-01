@@ -1,88 +1,10 @@
 <?php
 
-namespace starekrow\Lockbox;
+namespace starekrow;
+use Utility;
 
 /**
- * Tokens are a compact envelope for encrypted data. They provide the following
- * features:
- * 
- *   - HMAC signatures to prevent tampering
- *   - AES encryption
- *   - URL-safe representation
- *   - simple key creation and management
- *   - easy key rotation or token versioning
- *   - compact form for limited bandwidth connections
- *   - strong form for future-proof security
- *   - expandable format
- * 
- * Use
- * ---
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * Format
- * ------
- * 
- * The token format is designed to URL-safe while still limiting the overhead
- * required for format and encoding information. It offers a diverse selection
- * of types that trade off size and complexity against security. The weakest
- * available token is still more than sufficiently secure to defeat any attempt
- * to decode or tamper with it using currently available technology.
- * 
- * Structurally, the token is formed of two strings separated by a period
- * (".") character. The strings are in a URL-safe base-64 encoding, and decode
- * to binary strings. 
- * 
- * The first string is the header, and the first byte in the header is a "flags
- * byte", described below. The remainder of the header is a signature for the
- * payload.
- * 
- * The payload is the second string, and it is encrypted with an algorith that
- * depends on the type of the token. This type is specified within the flags 
- * byte. After decryption, the first byte of the payload is a copy of the flags
- * byte, and the remainder is either a binary string or JSON-encoded data, 
- * depending on another field in the flags byte.
- * 
- * ### Flags Byte
- * 
- * The flags byte contains the following bitfields:
- * 
- *   - bits 0 - 3: key index
- *   - bits 4 - 5: token type
- *     0. Secure
- *     1. Quick
- *     2. Compact
- *     3. there is no 3
- *   - bit 6: data type
- *     0. binary string
- *     1. JSON-encoded data
- *   - bit 7: reserved for header extension
- * 
- * The key index is a 4-bit unsigned integer field available for the 
- * application's use. This could be used, for example, to choose a key from a 
- * set of up to sixteen available keys. This value can be seen and used without
- * decrypting the token.
- * 
- * The token type selected affects the encryption and authentication of the
- * token, and influences its total length. The possible types are:
- * 
- *   - Quick: A quick token uses AES-128 for encryption, SHA-256 for the HMAC
- *     authentication, and KDF1 to generate keys.
- *   - Compact: Uses the same algorithms as the normal token, but only 
- *     includes the first 10 bytes of the HMAC for athentication.
- *   - Secure: Secure tokens encrypt with AES-256 and use HKDF with SHA-512 for
- *     authentication. An additional 256-bit salt is generated and stored
- *     before the signature.
- * 
- * Crypto
- * ------
- * 
- * 
+ *
  * 
  * 
  * 
@@ -93,151 +15,308 @@ class SecureToken
 {
     const KEY_INDEX_MASK                =   0x0f;
     const TOKEN_TYPE_MASK               =   0x30;
+    const PAYLOAD_TYPE_MASK             =   0x40;
 
     const SECURE_TOKEN                  =   0x00;
     const QUICK_TOKEN                   =   0x10;
     const COMPACT_TOKEN                 =   0x20;
+    const AUTO_TOKEN                    =   -1;
 
+    const BINARY_PAYLOAD                =   0x00;
     const JSON_PAYLOAD                  =   0x40;
+    const AUTO_PAYLOAD                  =   -2;
 
-    const AES_BLOCK_SIZE                =   16;
-    const AES128_KEY_LENGTH             =   16;
-    const AES256_KEY_LENGTH             =   16;
-    const SHA1_LENGTH                   =   20;
-    const SHA256_LENGTH                 =   32;
-    const SHA512_LENGTH                 =   64;
+    const TEXT_ENVELOPE                 =   0;
+    const BINARY_ENVELOPE               =   1;
 
-    static $aesEncrypt;
+    const MAX_KEY_INDEX                 =   0x0f;
 
-    static function base64url_encode($input) {
-        return str_replace('=', '', strtr(base64_encode($input), '+/', '-_'));
-    }  
-    static function base64url_decode($input) {
-        return base64_decode(str_pad(strtr($input, '-_', '+/'), (4 - strlen($input)) & 3));
-    }
-    static function hashlen($algo)
-    {
-        switch (strtolower(str_replace('-', '', $algo))) {
-        case 'md5':             return 16;
-        case 'sha1':            return 20;
-        case 'sha256':          return 32;
-        case 'sha512':          return 64;
-        }
-        return strlen(hash($algo,"test",true));
-    }
-    static function hash($algo, $data)
-    {
-        return hash($algo, $data, true);
-    }
-    static function hmac($algo, $data, $key)
-    {
-        return hash_hmac($algo, $data, $key, true);
-    }
-    static function kdf1($algo, $length, $key, $context = "")
-    {
-        $hashlen = self::hashlen($algo);
-        $reps = ceil($length / $hashlen);
-        $out = "";
-        for ($i = 0; $i < $reps; $i++) {
-            $out .= self::hash($algo, $key . pack('N', $i) . $context);
-        }
-        return substr($out, 0, $length);
-    }
-    static function hkdf($algo, $length, $sourceKey, $context = "", $salt = "")
-    {
-        $hashlen = self::hashlen($algo);
-        $reps = ceil($length / $hashlen);
-        $out = "";
-        for ($i = 0; $i < $reps; $i++) {
-            $out .= self::hash($algo, $sourceKey . pack('N', $i) . $context);
-        }
-        return substr($out, 0, $length);
+    const ERR_UNKNOWN_TYPE              =   1;
+    const ERR_UNKNOWN_PAYLOAD           =   1;
+    const ERR_UNKNOWN_ENVELOPE          =   3;
+    const ERR_BAD_KEY                   =   4;
+    const ERR_BAD_PAYLOAD               =   5;
+    const ERR_MISSING_KEY               =   6;
+    const ERR_BAD_KEY_INDEX             =   7;
 
+    static $throwErrorsDefault;
+    
+    public $tokenType;
+    public $payloadType;
+    public $envelopeType;
+    public $keyIndex;
+    public $keyData;
+    public $keyLibrary;
+    public $payload;
+    public $token;
+    public $throwErrors;
+
+    /**
+     * @param mixed $data data to encode
+     * @param mixed $key 
+     * 
+     */
+    static function encodeToken($data, string $key)
+    {
+        return (new SecureToken())->save($data)->encodeWith($key);
     }
 
-    static function pkcs7pad($data, $blocksize)
+    /**
+     * Decodes a encoded secure token
+     * 
+     * @param string $token The encoded token to decode
+     * @param string|array $key The key or key library to use for decoding
+     * @return mixed The decoded token data, or a TokenError
+     */
+    static function decodeToken(string $token, $key)
     {
-        $pad = $blocksize - (strlen($data) % $blocksize);
-        return $data . str_repeat(chr($pad), $pad);
+        return (new SecureToken())->load($token)->decodeWith($key);
     }
 
-    static function pkcs7unpad($data, $blocksize)
+    /**
+     * 
+     */
+
+    /**
+     * 
+     * @return SecureToken|null parsed token or `null` if token is obviously invalid
+     */
+    static function parse(string $data = null)
     {
-        $len = strlen($data);
-        $pad = ord($data[$len - 1]);
-        if ($pad < 1 || $pad > $blocksize || $len % $blocksize != 0) {
+        if (!$data) {
             return null;
         }
-        return substr($data, 0, $len - $pad);
-    }
-
-    static function aes_mcrypt($operation, $data, $key, $iv = null)
-    {
-        if ($operation == 'encrypt') {
-            $payload = self::pkcs7pad($data, self::AES_BLOCK_SIZE);
-            if (!$iv) {
-                $iv = mcrypt_create_iv(self::AES_BLOCK_SIZE, MCRYPT_DEV_URANDOM);
+        $token = new SecureToken();
+        if (ord($data[0]) & 0x80) {
+            // binary envelope
+        } else {
+            $token->format = self::FORMAT_TEXT;
+            $parts = explode(".", $data);
+            if (count($parts) != 2 || strlen($parts[0]) < 1 
+                                   || strlen($parts[1]) < 1) {
+                return null;
             }
-            $crypt = mcrypt_encrypt(MCRYPT_RIJNDAEL_128, $key->encrypt, $payload, MCRYPT_MODE_CBC, $iv);
-            return $iv . $crypt;
-        } else if ($operation == 'decrypt') {
-            $iv = substr($data, 0, self::AES_BLOCK_SIZE);
-            $ctext = substr($data, self::AES_BLOCK_SIZE);
-            $ptext = mcrypt_decrypt(MCRYPT_RIJNDAEL_128, $key->encrypt, $ctext, MCRYPT_MODE_CBC, $iv);
-            return self::pkcs7unpad($ptext, self::AES_BLOCK_SIZE);
+            $header = self::base64url_decode($parts[0]);
+            $token->encryptedPayload = self::base64url_decode($parts[1]);
+            if  ($header === null || $token->encryptedPayload === null) {
+                return null;
+            }
+            return (object) [
+                'flags' => ord($header[0]),
+                'sig' => substr($header, 1),
+                'payload' => $payload
+            ];
+    
         }
-        return null;
+        $flags = ord($header[0]);
+        $token->type = $flags & self::TOKEN_TYPE_MASK;
+        $token->keyIndex = $flags & self::KEY_INDEX_MASK;
+        $token->payloadType = $flags & self::PAYLOAD_TYPE_MASK;
+        $token->encryptedPayload = payload;
+        if ($token->type == self::SECURE_TOKEN) {
+
+        }
+        return $token;
     }
 
-    static function aes_openssl($operation, $data, $key)
+    public function __construct()
     {
-        if ($operation == 'encrypt') {
-            $iv = openssl_random_pseudo_bytes(self::AES_BLOCK_SIZE);
-            $bits = strlen($key->encrypt) << 3;
-            $crypt = openssl_encrypt($data , "AES-$bits-CBC", $key->encrypt, OPENSSL_RAW_DATA, $iv);
-            return $iv . $crypt;
-        } else if ($operation == 'decrypt') {
-            $iv = substr($data, 0, self::AES_BLOCK_SIZE);
-            $bits = strlen($key->encrypt) << 3;
-            $ctext = substr($data, self::AES_BLOCK_SIZE);
-            $ptext = openssl_decrypt($ctext, "AES-$bits-CBC", $key->encrypt, OPENSSL_RAW_DATA, $iv);
-            return $ptext;
-        }
-        return null;
+        $this->envelopeType = self::TEXT_ENVELOPE;
+        $this->tokenType = self::AUTO_TOKEN;
+        $this->payloadType = self::AUTO_PAYLOAD;
+        $this->keyIndex = 0;
     }
 
-    static function aes($operation, $data, $key)
+    public function throwErrors()
     {
-        if (!self::$aesEncrypt) {
-            if (function_exists('openssl_encrypt')) {
-                self::$aesEncrypt = 'aes_openssl';
-            } else if (function_exists('mcrypt_encrypt')) {
-                self::$aesEncrypt = 'aes_mcrypt';
-            }    
-        }
-        return self::{self::$aesEncrypt}($operation, $data, $key);
+        $this->throwErrors = true;
     }
-    static function parse($data)
+
+    public function returnErrors()
     {
-        if (!$data || !is_string($data)) {
-            return null;
-        }
-        $parts = explode(".", $data);
-        if (count($parts) != 2 || strlen($parts[0]) < 1 
-                               || strlen($parts[1]) < 1) {
-            return null;
-        }
-        $header = self::base64url_decode($parts[0]);
-        $payload = self::base64url_decode($parts[1]);
-        if  ($header === null || $payload === null) {
-            return null;
-        }
-        return (object) [
-            'flags' => ord($header[0]),
-            'sig' => substr($header, 1),
-            'payload' => $payload
-        ];
+        $this->throwErrors = false;
     }
+
+    public function clearError()
+    {
+        $this->error = null;
+        return $this;
+    }
+
+    protected function error(int $errorCode, string $message = null)
+    {
+        $explain = $message ?? self::errorMessages[$errorCode] ?? "error #{$errorCode}";
+        $error = new SecureTokenError("SecureToken error: {$explain}", $errorCode);
+        return $this->issueError($error);
+    }
+
+    protected function issueError(SecureTokenError $error)
+    {
+        $this->error = $error;
+        if ($this->throwErrors) {
+            throw $error;
+        }
+        return $error;
+    }
+
+    public function key(string $key, int $keyIndex = null)
+    {
+        $this->keyData = $key;
+        $this->keyLibrary = null;
+        if ($keyIndex !== null) {
+            return $this->keyIndex($keyIndex);
+        }
+        return $this;
+    }
+
+    public function keys(array $keys, int $keyIndex = null)
+    {
+        $this->keyData = null;
+        $this->keyLibrary = $keys;
+        if ($keyIndex !== null) {
+            return $this->keyIndex($keyIndex);
+        }
+        return $this;
+    }
+
+    public function keyIndex(int $keyIndex)
+    {
+        if ($keyIndex < 0 || $keyIndex > self::MAX_KEY_INDEX) {
+            $this->error(self::ERR_BAD_KEY, "Key index out of range");
+        } else {
+            $this->keyIndex = $keyIndex;
+        }
+        return $this;
+    }
+
+    public function tokenType(int $type)
+    {
+        switch ($type) {
+        case self::COMPACT_TOKEN:
+        case self::SECURE_TOKEN:
+        case self::QUICK_TOKEN:
+        case self::AUTO_TOKEN:
+            $this->tokenType = $type;
+            break;
+        default:
+            $this->error(self::ERR_UNKNOWN_TYPE);
+        }
+        return $this;
+    }
+
+    public function compactToken()
+    {
+        return $this->tokenType(self::COMPACT_TOKEN);
+    }
+
+    public function quickToken()
+    {
+        return $this->tokenType(self::QUICK_TOKEN);
+    }
+
+    public function secureToken()
+    {
+        return $this->tokenType(self::SECURE_TOKEN);
+    }
+
+    public function autoToken()
+    {
+        return $this->tokenType(self::AUTO_TOKEN);
+    }
+
+    public function envelopeType($type)
+    {
+        switch ($type) {
+        case self::BINARY_ENVELOPE;
+        case self::TEXT_ENVELOPE;
+            $this->envelopeType = $type;
+            break;
+        default:
+            $this->error(self::ERR_UNKNOWN_ENVELOPE);
+        }
+        return $this;
+    }
+
+    public function textEnvelope()
+    {
+        return $this->envelopeType(self::TEXT_ENVELOPE);
+    }
+
+    public function binaryEnvelope()
+    {
+        return $this->envelopeType(self::BINARY_ENVELOPE);
+    }
+
+    public function load(string $token)
+    {
+        $this->token = $token;
+
+        return $this;
+    }
+
+    public function save($data)
+    {
+        return $this;
+    }
+
+    public function decode($data)
+    {
+        if ($this->error) {
+            return $this->repeatError();
+        }
+    }
+
+    public function decodeWith($key)
+    {
+        if (is_string($key)) {
+            $useKey = $key;
+        } else if (is_array($key)) {
+
+        } else {
+            return $this->error(self::ERR_BAD_KEY);
+        }        
+    }
+
+    public function encode($payload)
+    {
+
+    }
+
+    public function encodeWith($key)
+    {
+
+    }
+
+    public function import($data)
+    {
+
+    }
+
+    public function payloadType($type)
+    {
+        switch ($type) {
+        case self::BINARY_PAYLOAD:
+        case self::JSON_PAYLOAD:
+            $this->payloadType = $type;
+            break;
+        default:
+            $this->error(self::ERR_UNKNOWN_PAYLOAD);
+        }
+        return $this;
+    }
+
+    public function jsonPayload()
+    {
+        return $this->payloadType(self::JSON_PAYLOAD);
+    }
+
+    public function binaryPayload()
+    {
+        return $this->payloadType(self::BINARY_PAYLOAD);
+    }
+
+    // TODO: public function cborPayload()
+    // TODO: public function pbPayload()
 
     static function flags($token)
     {
@@ -276,8 +355,8 @@ class SecureToken
             ];
         case self::COMPACT_TOKEN:
             return (object)[
-                'verify' => self::kdf1("sha1", self::SHA1_LENGTH, $key, "verify"),
-                'encrypt' => self::kdf1("sha1", self::AES128_KEY_LENGTH, $key, "encrypt")
+                'verify' => self::kdf1("sha256", self::SHA256_LENGTH, $key, "verify"),
+                'encrypt' => self::kdf1("sha256", self::AES128_KEY_LENGTH, $key, "encrypt")
             ];
         case self::SECURE_TOKEN:
             if ($salt === null) {
@@ -304,7 +383,7 @@ class SecureToken
         }
         return null;
     }
-
+/*
     static function encode($data, $key, $flags = 0, $salt = null, $iv = null)
     {
         $key = self::setupKey($key, $flags, $salt);
@@ -387,12 +466,16 @@ class SecureToken
         self::$aesEncrypt = $library ? "aes_$library" : null;
     }
 
+    static function throw()
+
     function __construct($flags, $key = null)
     {
 
     }
+*/
 }
 
+/*
 $flags = SecureToken::COMPACT_TOKEN;
 $data = '{"did":1234567890}';
 $iv = SecureToken::generate('iv', $flags);
@@ -406,3 +489,38 @@ echo strlen($tok) . " bytes: $tok" . PHP_EOL;
 //SecureToken::useLibrary("openssl");
 $t2 = SecureToken::decode($tok, $key);
 echo $t2 . PHP_EOL;
+
+
+$data = ["did" => 1234567890];
+
+// context-free encoding (SECURE tokens only)
+$key = SecureToken::randomKey();
+$keys = loadKeyLibrary();
+$keyIndex = 2;
+$tok = SecureToken::encodeToken($data, $key);
+
+// context-free decoding
+$data = SecureToken::decodeToken($tok, $key);
+
+$tok = (new SecureToken())->compact()->save($data)->encodeWith($key);
+$tok = (new SecureToken())->compact()->key($key)->encode($data);
+$tok = (new SecureToken())->compact()->save($data)->key($key)->encode();
+
+$data = (new SecureToken())->compact()->load($tok)->decodeWith($key);
+$data = (new SecureToken())->compact()->key($key)->decode($tok);
+
+$data = (new SecureToken())->compact()->load($tok)->decodeWith($key);
+$data = (new SecureToken())->compact()->load($tok)->decodeWith($keys);
+$data = (new SecureToken())->compact()->key($key)->decode($tok);
+$data = (new SecureToken())->compact()->keys($keys)->decode($tok);
+
+$data = (new SecureToken())->compact()->jsonFormat()->keyIndex(0)->key($key)->encode($data);
+
+
+$tok = (new SecureToken())->save($data)->keyIndex($keyIndex)->encodeWith($keys);
+$tok = (new SecureToken())->save($data)->keyIndex($keyIndex)->encodeWith($keys);
+$data = (new SecureToken())->keys($keys)->keyIndex(0)->encode($data);
+
+
+*/
+

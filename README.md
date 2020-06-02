@@ -73,9 +73,9 @@ decrypting the token.
 The token type selected affects the encryption and authentication of the
 token, and influences its total length. The possible types are:
 
-  - Normal: Normal tokens encrypt with AES-256 and use HKDF with SHA-512 for
+  - Secure: Normal tokens encrypt with AES-256 and use HKDF with SHA-512 for
     authentication. An additional 256-bit salt is generated and stored
-    before the signature.
+    before the MAC.
   - Quick: A quick token uses AES-128 for encryption, SHA-256 for the HMAC
     authentication, and KDF1 to generate keys.
   - Compact: Uses the same algorithms as the normal token, but only 
@@ -123,7 +123,7 @@ The theoretical lower limit for packet length then is 45 bytes, arranged as
 follows:
   - 1 byte: binary token header
     - bit 7 is set, indicating a binary token
-    - bits 6 is set to 0, there are additional length bytes
+    - bits 6 is set to 0, there are no additional length bytes
     - bits 0-5 are set to 44, the number of token bytes to follow
   - 1 byte: header length, set to 11
   - 1 byte: flags byte
@@ -131,7 +131,7 @@ follows:
     - bit 6 indicates whether the decrypted payload is binary or JSON
     - bits 4-5 indicate the token type (compact in this case)
     - bits 0-3 contain the key index
-  - 10 bytes: signature for a compact token
+  - 10 bytes: MAC for a compact token
   - 16 bytes: initialization vector for encryption
   - 16 bytes: the encrypted payload, consisting of:
     - 1 byte: copy of the flags byte
@@ -166,21 +166,20 @@ compact tokens below).
 Tokens are encrypted with either AES-256 or AES-128 in CBC mode. Plaintext
 payloads are padded as per PKCS-7. A new random IV is generated for each token,
 and is stored alongside the ciphertext in the token. Tokens carry a message
-authentication code, calculated through an HMAC algorithm based on SHA-256 or
-SHA-512.
+authentication code (MAC), calculated through an HMAC algorithm based on SHA-256
+or SHA-512.
 
 The key supplied to encrypt or decrypt the token is always run through a key
 derivation function before use, either HKDF-SHA512 or KDF1-SHA256; this
 relieves some of the burden on the client to choose keys of a specific length
-or complexity. Random salt is also added to the key for the more secure tokens.
-The MAC secret key is also based on the client-supplied key, but it is run
-through key derivation with a different salt to improve resistance to future
-theoretical shared-key attacks.
+or complexity. Random salt is also usually added to the key. The MAC secret key
+is based on the client-supplied key, but it is run through key derivation with
+a different salt to improve resistance to future theoretical shared-key attacks.
 
 Compact tokens are a special case, designed to minimise token length while
-providing full security and somewhat weakened authenticity, allowing them to
-be used in limited-bandwidth environments. In particular, compact tokens contain
-no random salt and only a fragment (10 bytes) of the calculated MAC.
+providing full security and somewhat weakened authenticity, improving their
+performance in limited-bandwidth environments. In particular, compact tokens
+contain no random salt and only a fragment (10 bytes) of the calculated MAC.
 
 The full set of algorithms and inputs is laid out here:
 
@@ -190,7 +189,8 @@ The full set of algorithms and inputs is laid out here:
     - MAC key: HKDF(client key + "verify" + padded length + key salt)
     - Encryption key: HKDF(client key + "encrypt" + padded length + key salt)
     - IV: 128 random bits
-    - ciphertext: payload encrypted with AES-256 using encryption key and IV
+    - ciphertext: payload is padded with PKCS-7, encrypted with AES-256 using 
+      encryption key and IV
     - MAC: HMAC-SHA512 of ciphertext using MAC key
 * Quick Token
     - key salt: 128 random bits
@@ -198,7 +198,8 @@ The full set of algorithms and inputs is laid out here:
     - MAC key: KDF1(client key + "verify" + padded length + key salt)
     - Encryption key: KDF1(client key + "encrypt" + padded length + key salt)
     - IV: 128 random bits
-    - ciphertext: payload encrypted with AES-128 using encryption key and IV
+    - ciphertext: payload is padded with PKCS-7, encrypted with AES-128 using
+      encryption key and IV
     - MAC: HMAC-SHA256 of ciphertext using MAC key
 * Compact Token
     - key salt: none
@@ -206,7 +207,8 @@ The full set of algorithms and inputs is laid out here:
     - MAC key: KDF1(client key + "verify" + padded length)
     - Encryption key: KDF1(client key + "encrypt" + padded length)
     - IV: 128 random bits
-    - ciphertext: payload encrypted with AES-128 using encryption key and IV
+    - ciphertext: payload is padded with PKCS-7, encrypted with AES-128 using
+      encryption key and IV
     - MAC: HMAC-SHA256 (truncated to 10 bytes) of ciphertext using MAC key
 
 The key salt and IV are publicly available in the token, and the padded length
@@ -214,4 +216,5 @@ is implied by the structure of the token.
 
 To reduce the possibility of side channel leaks, the library will only report
 success or failure of the cryptographic decoding, and will not differentiate 
-between padding errors and authentication errors.
+any errors that may occur during authentication and decryption.
+

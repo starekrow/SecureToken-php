@@ -1,7 +1,7 @@
 <?php
 
 namespace starekrow;
-use Utility;
+use starekrow\SecureToken\SecureToken;
 
 /**
  *
@@ -16,6 +16,7 @@ class SecureToken
     const KEY_INDEX_MASK                =   0x0f;
     const TOKEN_TYPE_MASK               =   0x30;
     const PAYLOAD_TYPE_MASK             =   0x40;
+    const EXTENSION_FLAG_MASK           =   0x80;
 
     const SECURE_TOKEN                  =   0x00;
     const QUICK_TOKEN                   =   0x10;
@@ -28,6 +29,7 @@ class SecureToken
 
     const TEXT_ENVELOPE                 =   0;
     const BINARY_ENVELOPE               =   1;
+    const AUTO_ENVELOPE                 =   -3;
 
     const MAX_KEY_INDEX                 =   0x0f;
 
@@ -38,6 +40,7 @@ class SecureToken
     const ERR_BAD_PAYLOAD               =   5;
     const ERR_MISSING_KEY               =   6;
     const ERR_BAD_KEY_INDEX             =   7;
+    const ERR_DECODE_FAILED             =   8;
 
     static $throwErrorsDefault;
     
@@ -76,6 +79,7 @@ class SecureToken
     /**
      * 
      */
+
 
     /**
      * 
@@ -147,16 +151,16 @@ class SecureToken
     {
         $explain = $message ?? self::errorMessages[$errorCode] ?? "error #{$errorCode}";
         $error = new SecureTokenError("SecureToken error: {$explain}", $errorCode);
-        return $this->issueError($error);
+        $this->error = $error;
+        return $this->errorRepsonse();
     }
 
-    protected function issueError(SecureTokenError $error)
+    protected function errorResponse()
     {
-        $this->error = $error;
         if ($this->throwErrors) {
-            throw $error;
+            throw $this->error;
         }
-        return $error;
+        return $this->error;
     }
 
     public function key(string $key, int $keyIndex = null)
@@ -229,6 +233,7 @@ class SecureToken
         switch ($type) {
         case self::BINARY_ENVELOPE;
         case self::TEXT_ENVELOPE;
+        case self::AUTO_ENVELOPE;
             $this->envelopeType = $type;
             break;
         default:
@@ -247,15 +252,20 @@ class SecureToken
         return $this->envelopeType(self::BINARY_ENVELOPE);
     }
 
+    public function autoEnvelope()
+    {
+        return $this->envelopeType(self::AUTO_ENVELOPE);
+    }
+
     public function load(string $token)
     {
         $this->token = $token;
-
         return $this;
     }
 
     public function save($data)
     {
+
         return $this;
     }
 
@@ -277,14 +287,74 @@ class SecureToken
         }        
     }
 
+    protected function encodePayload($payload)
+    {
+        switch ($this->payloadType) {
+        case self::BINARY_PAYLOAD:
+            if (!is_string($payload)) {
+                return $this->error(self::ERR_BAD_PAYLOAD, "Payload is not a string");
+            }
+            break;
+        case self::AUTO_PAYLOAD:
+            if (is_string($payload)) {
+                break;
+            }
+            // fall through
+        case self::JSON_PAYLOAD:
+            $payload = json_encode($payload);
+            if (json_last_error()) {
+                return $this->error(self::ERR_BAD_PAYLOAD, "Payload JSON encoding failed");
+            }
+            break;
+        }
+        return $payload;
+    }
+
+    protected function getKey()
+    {
+        if ($this->error) {
+            return $this->issueError();
+        }
+        if ($this->keyLibrary) {
+            if (!array_key_exists($this->keyIndex, $this->keyLibrary)) {
+                return $this->error(self::ERR_BAD_KEY_INDEX);
+            }
+            $key = $this->keyLibrary[$this->keyIndex];
+            if (!is_string($key) || $key === "") {
+                return $this->error(self::ERR_BAD_KEY, "Invalid key at given library index");
+            }
+        } else {
+            $key = $this->keyData;
+            if (!is_string($key) || $key === "") {
+                return $this->error(self::ERR_BAD_KEY, "No key provided");
+            }
+        }
+        return $key;
+    }
+
     public function encode($payload)
     {
-
+        $payload = $this->encodePayload($payload);
+        if ($payload instanceof SecureTokenError) {
+            return $payload;
+        }
+        $key = $this->getKey();
+        if ($key instanceof SecureTokenError) {
+            return $payload;
+        }
+        return $this->encrypt($payload, $key);
     }
 
     public function encodeWith($key)
     {
-
+        $payload = $this->processPayload($this->payload);
+        if ($payload instanceof SecureTokenError) {
+            return $payload;
+        }
+        if (!is_string($key) || $key === "") {
+            return $this->error(self::ERR_BAD_KEY, "No key provided");
+        }
+        return $this->encrypt($payload, $key);
     }
 
     public function import($data)
@@ -297,6 +367,7 @@ class SecureToken
         switch ($type) {
         case self::BINARY_PAYLOAD:
         case self::JSON_PAYLOAD:
+        case self::AUTO_PAYLOAD:
             $this->payloadType = $type;
             break;
         default:
@@ -315,8 +386,71 @@ class SecureToken
         return $this->payloadType(self::BINARY_PAYLOAD);
     }
 
+    public function autoPayload()
+    {
+        return $this->payloadType(self::AUTO_PAYLOAD);
+    }
+
     // TODO: public function cborPayload()
     // TODO: public function pbPayload()
+
+    protected function parseHeader(string $header)
+    {
+        if (strlen($header) < 1) {
+            return $this->error(self::ERR_DECODE_FAILED);
+        }
+        $flags = ord($header[0]);
+        if ($flags & self::EXTENSION_BIT) {
+            return $this->error(self::ERR_DECODE_FAILED);
+        }
+        $tokenType = $flags & self::TOKEN_TYPE_MASK;
+        if ($tokenType == self::RESERVED_TOKEN) {
+            return $this->error(self::ERR_DECODE_FAILED);
+        } else if ($this->tokenType == self::AUTO_TOKEN) {
+            $this->tokenType = $tokenType;
+        } else if ($this->tokenType != $tokenType) {
+            return $this->error(self::ERR_DECODE_FAILED);
+        }
+        $payloadType = $flags & self::PAYLOAD_TYPE_MASK;
+        if ($this->payloadType == self::AUTO_PAYLOAD) {
+            $this->payloadType = $payloadType;
+        } else if ($this->payloadType != $payloadType) {
+            return $this->error(self::ERR_DECODE_FAILED);
+        }
+        $this->keyIndex = $flags & self::KEY_INDEX_MASK;
+        $this->setupCoder();
+        $this->mac = $this->coder->getMAC($header);
+        $this->salt = $this->coder->getSalt($header);
+    }
+
+    protected function unwrap()
+    {
+        if (ord($this->token[0]) & 0x80) {
+            $this->envelopeType = self::BINARY_ENVELOPE;
+            $this->tokenWrapper = new BinaryWrapper();
+        } else {
+            $this->envelopeType = self::TEXT_ENVELOPE;
+            $this->tokenWrapper = new TextWrapper();
+        }
+        list($header, $payload) = $this->tokenWrapper->unwrap($token);
+        $this->parseHeader($header);
+        $this->payload = $payload;
+    }
+
+    protected function wrap(int $flags, string $signature, string $cipherText)
+    {
+        switch ($this->tokenType) {
+        case self::BINARY_ENVELOPE:
+            $this->tokenWrapper = new BinaryWrapper();
+            return $this->wrapBinary($flags, $signature, $cipherText);
+        case self::AUTO_ENVELOPE:
+            $this->envelopeType = self::TEXT_ENVELOPE;
+            // fall through
+        case self::TEXT_ENVELOPE:
+            $this->tokenWrapper = new TextWrapper();
+        }
+        $this->token = $this->tokenWrapper->wrap($flags, $signature, $cipherText);
+    }
 
     static function flags($token)
     {
@@ -350,7 +484,7 @@ class SecureToken
         switch ($flags & self::TOKEN_TYPE_MASK) {
         case self::QUICK_TOKEN:
             return (object)[
-                'verify' => self::kdf1("sha256", self::SHA256_LENNGTH, $key, "verify"),
+                'verify' => self::kdf1("sha256", self::SHA256_LENGTH, $key, "verify"),
                 'encrypt' => self::kdf1("sha256", self::AES128_KEY_LENGTH, $key, "encrypt")
             ];
         case self::COMPACT_TOKEN:

@@ -391,8 +391,15 @@ class SecureToken
         return $this->payloadType(self::AUTO_PAYLOAD);
     }
 
+    protected function setupCoder()
+    {
+
+    }
+
     // TODO: public function cborPayload()
     // TODO: public function pbPayload()
+
+    
 
     protected function parseHeader(string $header)
     {

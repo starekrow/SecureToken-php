@@ -7,7 +7,7 @@ class QuickCoder extends BaseCoder
     public $ivLength = self::AES_BLOCK_SIZE;
     public $signatureLength = self::SHA256_LENGTH;
     public $keyLength = self::AES128_KEY_LENGTH;
-    public $saltLength = 0;
+    public $saltLength = 16;
 
     public function sign($data, $key, $salt = null)
     {
@@ -15,13 +15,13 @@ class QuickCoder extends BaseCoder
         return self::hmac_sha256($data, $sigkey);
     }
 
-    public function encode($data, $key)
+    public function encode($payload, $key)
     {
         $cryptkey = self::kdf1_sha256($key, "encrypt", $this->keyLength);
         return self::aes128($data, $cryptkey);
     }
 
-    public function decode($data, $key)
+    public function decode($cipher, $key)
     {
         $cryptkey = self::kdf1_sha256($key, "encrypt", $this->keyLength);
         return self::aes128($data, $cryptkey);

@@ -4,26 +4,39 @@ namespace starekrow\SecureToken;
 
 class QuickCoder extends BaseCoder
 {
-    public $ivLength = self::AES_BLOCK_SIZE;
-    public $signatureLength = self::SHA256_LENGTH;
-    public $keyLength = self::AES128_KEY_LENGTH;
+    public $macLength = self::HMAC_SHA256_KEY_LENGTH;
     public $saltLength = 16;
+    public $ivLength = self::AES_BLOCK_SIZE;
+    public $keyLength = self::AES128_KEY_LENGTH;
 
-    public function sign($data, $key, $salt = null)
+    public function encryptionKey(string $userKey, string $salt)
     {
-        $sigkey = self::kdf1_sha256($key, "verify", self::SHA256_LENGTH);
-        return self::hmac_sha256($data, $sigkey);
+        return self::kdf1(self::ALGO_SHA256, $this->macLength, $userKey, "encrypt", $salt);
     }
 
-    public function encode($payload, $key)
+    public function authorizationKey(string $userKey, string $salt)
     {
-        $cryptkey = self::kdf1_sha256($key, "encrypt", $this->keyLength);
-        return self::aes128($data, $cryptkey);
+        return self::kdf1(self::ALGO_SHA256,$this->macLength, $userKey, "verify", $salt);
     }
 
-    public function decode($cipher, $key)
+    public function getMAC(string $data, string $authorizationKey)
     {
-        $cryptkey = self::kdf1_sha256($key, "encrypt", $this->keyLength);
-        return self::aes128($data, $cryptkey);
+        return self::hmac(self::ALGO_SHA256, $data, $authorizationKey);
+    }
+
+    public function verifyMAC(string $data, string $mac, string $authorizationKey)
+    {
+        $checkmac = $this->getMAC($data, $authorizationKey);
+        return \hash_equals($mac, $checkmac);
+    }
+
+    public function encrypt(string $payload, string $encryptionKey)
+    {
+        return self::aes($payload, $encryptionKey);
+    }
+
+    public function decrypt(string $cipher, string $encryptionKey)
+    {
+        return self::aes($cipher, $encryptionKey);
     }
 }

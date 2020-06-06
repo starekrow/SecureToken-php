@@ -340,9 +340,9 @@ class SecureToken
         }
         $key = $this->getKey();
         if ($key instanceof SecureTokenError) {
-            return $payload;
+            return $key;
         }
-        return $this->encrypt($payload, $key);
+        return $this->tokenForPayloadAndKey($payload, $key);
     }
 
     public function encodeWith($key)
@@ -393,13 +393,16 @@ class SecureToken
 
     protected function setupCoder()
     {
+        
+    }
+
+    protected function tokenForPayloadAndKey(stirng $payload, string $key)
+    {
 
     }
 
     // TODO: public function cborPayload()
     // TODO: public function pbPayload()
-
-    
 
     protected function parseHeader(string $header)
     {
@@ -430,35 +433,7 @@ class SecureToken
         $this->salt = $this->coder->getSalt($header);
     }
 
-    protected function unwrap()
-    {
-        if (ord($this->token[0]) & 0x80) {
-            $this->envelopeType = self::BINARY_ENVELOPE;
-            $this->tokenWrapper = new BinaryWrapper();
-        } else {
-            $this->envelopeType = self::TEXT_ENVELOPE;
-            $this->tokenWrapper = new TextWrapper();
-        }
-        list($header, $payload) = $this->tokenWrapper->unwrap($token);
-        $this->parseHeader($header);
-        $this->payload = $payload;
-    }
-
-    protected function wrap(int $flags, string $signature, string $cipherText)
-    {
-        switch ($this->tokenType) {
-        case self::BINARY_ENVELOPE:
-            $this->tokenWrapper = new BinaryWrapper();
-            return $this->wrapBinary($flags, $signature, $cipherText);
-        case self::AUTO_ENVELOPE:
-            $this->envelopeType = self::TEXT_ENVELOPE;
-            // fall through
-        case self::TEXT_ENVELOPE:
-            $this->tokenWrapper = new TextWrapper();
-        }
-        $this->token = $this->tokenWrapper->wrap($flags, $signature, $cipherText);
-    }
-
+/*
     static function flags($token)
     {
         if (!is_string($token) || strlen($token) < 2) {
@@ -524,7 +499,7 @@ class SecureToken
         }
         return null;
     }
-/*
+
     static function encode($data, $key, $flags = 0, $salt = null, $iv = null)
     {
         $key = self::setupKey($key, $flags, $salt);

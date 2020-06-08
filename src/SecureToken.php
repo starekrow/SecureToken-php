@@ -48,10 +48,10 @@ class SecureToken
     public $payloadType;
     public $envelopeType;
     public $keyIndex;
-    public $keyData;
-    public $keyLibrary;
-    public $payload;
-    public $token;
+    private $keyData;
+    private $keyLibrary;
+    private $payload;
+    private $token;
     public $throwErrors;
 
     /**
@@ -391,46 +391,52 @@ class SecureToken
         return $this->payloadType(self::AUTO_PAYLOAD);
     }
 
-    protected function setupCoder()
-    {
-        
-    }
-
-    protected function tokenForPayloadAndKey(stirng $payload, string $key)
-    {
-
-    }
-
     // TODO: public function cborPayload()
     // TODO: public function pbPayload()
 
-    protected function parseHeader(string $header)
+    protected function generateToken(string $payload, string $key)
     {
-        if (strlen($header) < 1) {
+        try {
+            return $this->coderForType($this->tokenType)
+                ->payloadType($this->payloadType)
+                ->encrypt($payload, $key)
+                ->wrap($this->envelopeType);
+        } catch (Throwable $e) {
+            return $this->error(self::ERR_ENCODE_FAILED);
+        }
+    }
+
+    protected function extractPayload(string $token, string $key)
+    {
+        try {
+            return $this->coderForToken($token)
+                ->unwrap($this->envelopeType)
+                ->tokenType($this->tokenType)
+                ->decrypt($key)
+                ->payload($this->payloadType);
+        } catch (Throwable $e) {
             return $this->error(self::ERR_DECODE_FAILED);
         }
-        $flags = ord($header[0]);
-        if ($flags & self::EXTENSION_BIT) {
-            return $this->error(self::ERR_DECODE_FAILED);
+    }
+
+    private function coderForType(int $tokenType)
+    {
+        switch ($tokenType) {
+        case self::SECURE_TOKEN:
+        case self::AUTO_TOKEN:
+            return new SecureCoder();
+        case self::QUICK_TOKEN:
+            return new QuickCoder();
+        case self::COMPACT_TOKEN:
+            return new CompactCoder();
+        default:
+            return null;
         }
-        $tokenType = $flags & self::TOKEN_TYPE_MASK;
-        if ($tokenType == self::RESERVED_TOKEN) {
-            return $this->error(self::ERR_DECODE_FAILED);
-        } else if ($this->tokenType == self::AUTO_TOKEN) {
-            $this->tokenType = $tokenType;
-        } else if ($this->tokenType != $tokenType) {
-            return $this->error(self::ERR_DECODE_FAILED);
-        }
-        $payloadType = $flags & self::PAYLOAD_TYPE_MASK;
-        if ($this->payloadType == self::AUTO_PAYLOAD) {
-            $this->payloadType = $payloadType;
-        } else if ($this->payloadType != $payloadType) {
-            return $this->error(self::ERR_DECODE_FAILED);
-        }
-        $this->keyIndex = $flags & self::KEY_INDEX_MASK;
-        $this->setupCoder();
-        $this->mac = $this->coder->getMAC($header);
-        $this->salt = $this->coder->getSalt($header);
+    }
+
+    private function coderForToken(string $token)
+    {
+        return self::coderForType(TokenCoder::extractTokenType($token));
     }
 
 /*

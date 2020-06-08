@@ -1,8 +1,10 @@
 <?php
 
 namespace starekrow\SecureToken;
+use starekrow\SecureToken\SecureToken;
+use Exception, Error;
 
-abstract class BaseCoder
+abstract class TokenCoder
 {
     const MIN_TEXT_TOKEN_LENGTH = 6;
     const MIN_BINARY_TOKEN_LENGTH = 4;
@@ -30,6 +32,14 @@ abstract class BaseCoder
     public $signatureLength;
     public $keyLength;
     public $saltLength;
+
+    private $header;
+    private $salt;
+    private $mac;
+    private $flags;
+    private $body;
+    private $iv;
+    private $payload;
 
     static function hash(string $algo, string $data)
     {
@@ -183,7 +193,7 @@ abstract class BaseCoder
     public function unwrapText($token)
     {
         $len = strlen($token);
-        $mid = \strpos($token, self::HEADER_DELIMITER);
+        $mid = strpos($token, self::HEADER_DELIMITER);
         if (
             $len < self::MIN_PARSEABLE_TOKEN_LENGTH
             || $token[$len - 1] != self::TOKEN_TERMINATOR
@@ -280,7 +290,43 @@ abstract class BaseCoder
         ]);
     }
 
-    public function 
+    static function extractTokenType($token)
+    {
+        $tlen = strlen($token);
+        if ($tlen < 4) {
+            throw new TokenError(TokenError::ERR_FORMAT);
+        }
+        if (ord($token[0]) & 0x80) {
+            $scan = 1;
+            if (ord($token[0]) & 0x40) {
+                // skip the rest of the token length
+                while (ord($token[$scan]) & 0x80) {
+                    ++$scan;
+                    if ($scan + 1 >= $tlen) {
+                        return null;
+                    }
+                }    
+            }
+            // skip the header length
+            while (ord($token[$scan]) & 0x80) {
+                ++$scan;
+                if ($scan + 1 >= $tlen) {
+                    return null;
+                }
+            }    
+            $flag = ord($token[$scan + 1]);
+        } else {
+            $data = TokenCoder::base64url_decode(substr($token, 0, 4));
+            if (!$data || (ord($data[0]) & self::EXTENSION_FLAG_MASK)) {
+                return null;
+            }
+            $flag = ord($data[0]);
+        }
+        if ($flag & self::EXTENSION_FLAG_MASK) {
+            throw new TokenError(TokenError::ERR_FORMAT);
+        }
+        return $flag & self::TOKEN_TYPE_MASK;
+    }
 
     abstract public function encryptionKey(string $userKey, string $salt);
     abstract public function authorizationKey(string $userKey, string $salt);
